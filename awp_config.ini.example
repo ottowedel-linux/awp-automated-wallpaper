@@ -1,0 +1,65 @@
+# Example AWP ini Configuration
+# Copy this file together with awp_setup.py, awp_daemon.py, awp_nav.py
+# to ~/awp/ as awp_config.ini and edit with your wallpaper folder and
+# desired icon paths for each worspace like the example below. The example
+# is for 3 workspaces, but using awp_setup you could setup with less or more
+# workspaces. And make sure to select the appropriate os_detected and session_type.
+#
+# NOTE: If conky is enabled, AWP will write wallpaper information to:
+#       ~/awp/conky/.awp_conky_state.txt
+#       Make sure this directory exists if you plan to use Conky integration.
+
+[general]
+os_detected = xfce
+session_type = x11
+blanking_timeout = 1200
+blanking_pause = false
+workspaces = 3
+
+[workspace1]
+folder = /home/user/wallpapers/workspace1
+icon = /home/user/awp/logos/workspace1.png
+icon_color = #00ffd5
+color_variable = workspace1_color
+timing = 24h
+mode = random
+order = n
+scaling = zoomed
+icon_theme = Adwaita
+gtk_theme = Adwaita-dark
+cursor_theme = Adwaita
+wm_theme = Adwaita
+desktop_theme = Adwaita
+
+[workspace2]
+folder = /home/user/wallpapers/workspace2
+icon = /home/user/awp/logos/workspace2.png
+icon_color = #f8ec09
+color_variable = workspace2_color
+timing = 5m
+mode = sequential
+order = name_old
+scaling = scaled
+icon_theme = Adwaita
+gtk_theme = Adwaita
+cursor_theme = Adwaita
+wm_theme = Adwaita
+desktop_theme = Adwaita
+
+[workspace3]
+folder = /home/user/wallpapers/workspace3
+icon = /home/user/awp/logos/workspace3.png
+icon_color = #fa4781
+color_variable = workspace3_color
+timing = 30s
+mode = sequential
+order = name_az
+scaling = scaled
+icon_theme = Adwaita
+gtk_theme = Adwaita
+cursor_theme = Adwaita
+wm_theme = Adwaita
+desktop_theme = Adwaita
+
+[conky]
+enabled = false
