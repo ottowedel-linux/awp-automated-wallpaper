@@ -1,0 +1,26 @@
+# Backup files
+*.bak
+*.backup
+*.tmp
+
+# Log files
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# AWP state files
+indexes.json
+awp_config.ini
+
+# Conky integration
+.awp_conky_state.txt
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo

@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""
+AWP - Automated Wallpaper Program
+Main Daemon Process
+
+Background service that manages wallpaper rotation, theme switching, 
+and workspace-aware desktop customization.
+Part of the AWP wallpaper automation system.
+"""
 import configparser
 import json
 import os
@@ -9,31 +17,73 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 
+os.environ['NO_AT_BRIDGE'] = '1'
+
+# =============================================================================
+# PATHS AND CONSTANTS
+# =============================================================================
 AWP_DIR = os.path.expanduser("~/awp")
 CONFIG_PATH = os.path.join(AWP_DIR, "awp_config.ini")
 STATE_PATH = os.path.join(AWP_DIR, "indexes.json")
-# CONKY INTEGRATION: Path for the Conky state file
+
+# =============================================================================
+# CONKY INTEGRATION (OPTIONAL)
+# 
+# To enable Conky integration:
+# 1. Uncomment the update_conky_state() call in the apply_index() method below
+# 2. Ensure the CONKY_STATE_PATH below matches your Conky configuration
+# 3. Your Conky/Lua script can read from this file for real-time wallpaper info
+#
+# AVAILABLE VARIABLES for your Conky/Lua script:
+# - wallpaper_path: Current wallpaper image path
+# - workspace_name: Current workspace (e.g., 'ws1')  
+# - logo_path: Workspace icon path
+# - icon_color: Dominant color from workspace icon (hex)
+# - intv: Wallpaper rotation interval (e.g., '5m', '30s')
+# - flow: Rotation mode ('random' or 'sequential')
+# - sort: Sort order ('name_az', 'name_za', 'name_old', 'name_new')
+# - view: Scaling mode ('centered', 'scaled', 'zoomed')
+# - blanking_timeout: Screen blanking timeout ('off', '30s', '5m', etc.)
+# - blanking_paused: Whether blanking is paused ('True' or 'False')
+#
+# DEFAULT LOCATION: ~/awp/conky/.awp_conky_state.txt
+# ↪ Customize CONKY_STATE_PATH below if needed
+# =============================================================================
 CONKY_STATE_PATH = os.path.expanduser('~/awp/conky/.awp_conky_state.txt')
+
+# Global state variables (loaded from config)
 DE = None
 SESSION_TYPE = None
 BLANKING_PAUSE = False
-BLANKING_TIMEOUT = 0  # ← Will be loaded from INI
-BLANKING_FORMATTED = "off"  # ← NEW: Human-readable for Conky
+BLANKING_TIMEOUT = 0
+BLANKING_FORMATTED = "off"
 
-# ---------- backend XFCE ----------
+# =============================================================================
+# DESKTOP ENVIRONMENT SCALING MAPPINGS
+# =============================================================================
 SCALING_XFCE = {'centered': 1, 'scaled': 4, 'zoomed': 5}
+SCALING_GNOME = {'centered': 'centered', 'scaled': 'scaled', 'zoomed': 'zoom'}
+SCALING_CINNAMON = {'centered': 'centered', 'scaled': 'scaled', 'zoomed': 'zoom'}
+SCALING_MATE = {'centered': 'centered', 'scaled': 'scaled', 'zoomed': 'zoom'}
+
+# =============================================================================
+# XFCE BACKEND FUNCTIONS
+# =============================================================================
 
 def xfce_force_single_workspace_off():
+    """Disable single workspace mode in XFCE."""
     subprocess.run([
         "xfconf-query", "-c", "xfce4-desktop",
         "-p", "/backdrop/single-workspace-mode",
-        "--set", "false"
+        "--set", "false", "--create"
     ])
 
-def xfce_configure_screen_blanking(timeout_seconds):
+def xfce_configure_screen_blanking(timeout_seconds: int):
     """
     Configure screen blanking for XFCE/X11 sessions.
-    timeout_seconds: Time in seconds before screen blanks (0 = disable).
+    
+    Args:
+        timeout_seconds (int): Time in seconds before screen blanks (0 = disable)
     """
     if timeout_seconds == 0:
         # Explicitly disable all blanking
@@ -47,7 +97,8 @@ def xfce_configure_screen_blanking(timeout_seconds):
         subprocess.run(["xset", "dpms", str(timeout_seconds), str(timeout_seconds), str(timeout_seconds)], check=False)
         print(f"[AWP] Screen blanking set to {timeout_seconds}s")
 
-def xfce_get_monitors_for_workspace(ws_num):
+def xfce_get_monitors_for_workspace(ws_num: int):
+    """Get list of monitors for specified XFCE workspace."""
     props = subprocess.check_output(
         ["xfconf-query", "-c", "xfce4-desktop", "-l"], text=True
     ).splitlines()
@@ -59,26 +110,32 @@ def xfce_get_monitors_for_workspace(ws_num):
                 monitors.append(parts[3])
     return sorted(set(monitors))
 
-def xfce_set_wallpaper(ws_num, image_path, scaling):
+def xfce_set_wallpaper(ws_num: int, image_path: str, scaling: str):
+    """Set wallpaper for XFCE workspace with specified scaling."""
     style_code = SCALING_XFCE.get(scaling, 5)
     for mon in xfce_get_monitors_for_workspace(ws_num):
         subprocess.run([
             "xfconf-query",
             "--channel", "xfce4-desktop",
             "--property", f"/backdrop/screen0/{mon}/workspace{ws_num}/last-image",
-            "--set", image_path
+            "--set", image_path,
+            "--create"
         ])
         subprocess.run([
             "xfconf-query",
-            "--channel", "xfce4-desktop",
+            "--channel", "xfce4-desktop", 
             "--property", f"/backdrop/screen0/{mon}/workspace{ws_num}/image-style",
-            "--set", str(style_code)
+            "--set", str(style_code),
+            "--create"
         ])
     subprocess.run(["xfdesktop", "--reload"])
 
-def xfce_set_icon(icon_path):
+def xfce_set_icon(icon_path: str):
     """
-    Sets the Whisker Menu icon for XFCE by editing the config file and restarting the panel.
+    Set the Whisker Menu icon for XFCE.
+    
+    Args:
+        icon_path (str): Full path to icon image file
     """
     config_file = os.path.expanduser("~/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml")
     
@@ -96,10 +153,13 @@ def xfce_set_icon(icon_path):
     except subprocess.CalledProcessError as e:
         print(f"Error setting XFCE icon: {e}")
         
-def xfce_set_themes(ws_num, config):
+def xfce_set_themes(ws_num: int, config):
     """
-    Sets XFCE theme parameters by reading from config INI.
-    ws_num is 0-based (0 for ws1, etc.).
+    Set XFCE theme parameters from configuration.
+    
+    Args:
+        ws_num (int): Workspace number (0-based)
+        config: Configuration parser object
     """
     section = f"ws{ws_num + 1}"
     
@@ -114,40 +174,102 @@ def xfce_set_themes(ws_num, config):
     wm_theme = config.get(section, 'wm_theme', fallback=None)
     
     # Apply themes if they exist in config
-    if icon_theme:
-        subprocess.run(["xfconf-query", "-c", "xsettings", "-p", "/Net/IconThemeName", "--set", icon_theme])
-        print(f"✓ XFCE icon theme: {icon_theme}")
-    
-    if gtk_theme:
-        subprocess.run(["xfconf-query", "-c", "xsettings", "-p", "/Net/ThemeName", "--set", gtk_theme])
-        print(f"✓ XFCE GTK theme: {gtk_theme}")
-    
-    if cursor_theme:
-        subprocess.run(["xfconf-query", "-c", "xsettings", "-p", "/Gtk/CursorThemeName", "--set", cursor_theme])
-        print(f"✓ XFCE cursor theme: {cursor_theme}")
-    
-    if wm_theme:
-        subprocess.run(["xfconf-query", "-c", "xfwm4", "-p", "/general/theme", "--set", wm_theme])
-        print(f"✓ XFCE window theme: {wm_theme}")
-    
-    print(f"Applied XFCE themes for workspace {ws_num + 1}")
+    try:
+        if icon_theme:
+            # Check if property exists
+            result = subprocess.run(
+                ["xfconf-query", "-c", "xsettings", "-p", "/Net/IconThemeName"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                # Property exists - set without --create
+                subprocess.run(
+                    ["xfconf-query", "-c", "xsettings", "-p", "/Net/IconThemeName", "--set", icon_theme],
+                    check=True
+                )
+            else:
+                # Property doesn't exist - create it
+                subprocess.run(
+                    ["xfconf-query", "-c", "xsettings", "-p", "/Net/IconThemeName", "--set", icon_theme, "--create"],
+                    check=True
+                )
+            print(f"✓ XFCE icon theme: {icon_theme}")
+        
+        # Repeat the same pattern for other themes...
+        if gtk_theme:
+            result = subprocess.run(
+                ["xfconf-query", "-c", "xsettings", "-p", "/Net/ThemeName"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                subprocess.run(
+                    ["xfconf-query", "-c", "xsettings", "-p", "/Net/ThemeName", "--set", gtk_theme],
+                    check=True
+                )
+            else:
+                subprocess.run(
+                    ["xfconf-query", "-c", "xsettings", "-p", "/Net/ThemeName", "--set", gtk_theme, "--create"],
+                    check=True
+                )
+            print(f"✓ XFCE GTK theme: {gtk_theme}")
+        
+        if cursor_theme:
+            result = subprocess.run(
+                ["xfconf-query", "-c", "xsettings", "-p", "/Gtk/CursorThemeName"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                subprocess.run(
+                    ["xfconf-query", "-c", "xsettings", "-p", "/Gtk/CursorThemeName", "--set", cursor_theme],
+                    check=True
+                )
+            else:
+                subprocess.run(
+                    ["xfconf-query", "-c", "xsettings", "-p", "/Gtk/CursorThemeName", "--set", cursor_theme, "--create"],
+                    check=True
+                )
+            print(f"✓ XFCE cursor theme: {cursor_theme}")
+        
+        if wm_theme:
+            result = subprocess.run(
+                ["xfconf-query", "-c", "xfwm4", "-p", "/general/theme"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                subprocess.run(
+                    ["xfconf-query", "-c", "xfwm4", "-p", "/general/theme", "--set", wm_theme],
+                    check=True
+                )
+            else:
+                subprocess.run(
+                    ["xfconf-query", "-c", "xfwm4", "-p", "/general/theme", "--set", wm_theme, "--create"],
+                    check=True
+                )
+            print(f"✓ XFCE window theme: {wm_theme}")
+        
+        print(f"Applied XFCE themes for workspace {ws_num + 1}")
+        
+    except subprocess.CalledProcessError as e:
+        print(f"Error applying XFCE themes: {e}")
 
-
-# ---------- backend GNOME ----------
-SCALING_GNOME = {'centered': 'centered', 'scaled': 'scaled', 'zoomed': 'zoom'}
+# =============================================================================
+# GNOME BACKEND FUNCTIONS
+# =============================================================================
 
 def gnome_force_single_workspace_off():
+    """GNOME doesn't have single workspace mode to disable."""
     pass
 
-def gnome_set_wallpaper(ws_num, image_path, scaling):
+def gnome_set_wallpaper(ws_num: int, image_path: str, scaling: str):
+    """Set wallpaper for GNOME with specified scaling."""
     uri = f"file://{image_path}"
     style_val = SCALING_GNOME.get(scaling, 'zoom')
     subprocess.run(["gsettings", "set", "org.gnome.desktop.background", "picture-uri", uri])
     subprocess.run(["gsettings", "set", "org.gnome.desktop.background", "picture-uri-dark", uri])
     subprocess.run(["gsettings", "set", "org.gnome.desktop.background", "picture-options", style_val])
 
-def gnome_set_themes(ws_num, config):  # ← Add config parameter
-    """GNOME theme setting"""
+def gnome_set_themes(ws_num: int, config):
+    """Set GNOME theme parameters from configuration."""
     section = f"ws{ws_num + 1}"
     if not config.has_section(section):
         return
@@ -166,22 +288,27 @@ def gnome_set_themes(ws_num, config):  # ← Add config parameter
         subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "cursor-theme", cursor_theme])
         print(f"✓ GNOME cursor theme: {cursor_theme}")
 
-# ---------- backend Cinnamon ----------
-SCALING_CINNAMON = {'centered': 'centered', 'scaled': 'scaled', 'zoomed': 'zoom'}
+# =============================================================================
+# CINNAMON BACKEND FUNCTIONS
+# =============================================================================
 
 def cinnamon_force_single_workspace_off():
+    """Cinnamon doesn't have single workspace mode to disable."""
     pass
 
-def cinnamon_set_wallpaper(ws_num, image_path, scaling):
+def cinnamon_set_wallpaper(ws_num: int, image_path: str, scaling: str):
+    """Set wallpaper for Cinnamon with specified scaling."""
     uri = f"file://{image_path}"
     style_val = SCALING_CINNAMON.get(scaling, 'zoom')
     subprocess.run(["gsettings", "set", "org.cinnamon.desktop.background", "picture-uri", uri])
     subprocess.run(["gsettings", "set", "org.cinnamon.desktop.background", "picture-options", style_val])
 
-def cinnamon_set_icon(icon_path):
+def cinnamon_set_icon(icon_path: str):
     """
-    Sets the Cinnamon Menu icon by editing the menu JSON spice file directly.
-    icon_path: Full path to the icon image.
+    Set the Cinnamon Menu icon.
+    
+    Args:
+        icon_path (str): Full path to icon image file
     """
     import json
     config_file = os.path.expanduser("~/.config/cinnamon/spices/menu@cinnamon.org/0.json")
@@ -201,16 +328,16 @@ def cinnamon_set_icon(icon_path):
         # Notify user
         print(f"Set Cinnamon menu icon to: {icon_path}")
         
-        # Optional: reload the spice (works in most Cinnamon versions)
-        #subprocess.run(["cinnamon-spice-tool", "reload", "menu@cinnamon.org"], check=False)
-        
     except Exception as e:
         print(f"Error setting Cinnamon menu icon: {e}")
 
-def cinnamon_set_themes(ws_num, config):
+def cinnamon_set_themes(ws_num: int, config):
     """
-    Sets Cinnamon theme parameters by reading from config INI.
-    ws_num is 0-based (0 for ws1, etc.).
+    Set Cinnamon theme parameters from configuration.
+    
+    Args:
+        ws_num (int): Workspace number (0-based)
+        config: Configuration parser object
     """
     section = f"ws{ws_num + 1}"
     
@@ -248,19 +375,22 @@ def cinnamon_set_themes(ws_num, config):
     
     print(f"Applied Cinnamon themes for workspace {ws_num + 1}")
 
-# ---------- backend MATE ----------
-SCALING_MATE = {'centered': 'centered', 'scaled': 'scaled', 'zoomed': 'zoom'}
+# =============================================================================
+# MATE BACKEND FUNCTIONS
+# =============================================================================
 
 def mate_force_single_workspace_off():
+    """MATE doesn't have single workspace mode to disable."""
     pass
 
-def mate_set_wallpaper(ws_num, image_path, scaling):
+def mate_set_wallpaper(ws_num: int, image_path: str, scaling: str):
+    """Set wallpaper for MATE with specified scaling."""
     style_val = SCALING_MATE.get(scaling, 'zoom')
     subprocess.run(["gsettings", "set", "org.mate.background", "picture-filename", image_path])
     subprocess.run(["gsettings", "set", "org.mate.background", "picture-options", style_val])
 
-def mate_set_themes(ws_num, config):
-    """MATE theme setting"""
+def mate_set_themes(ws_num: int, config):
+    """Set MATE theme parameters from configuration."""
     section = f"ws{ws_num + 1}"
     if not config.has_section(section):
         return
@@ -279,14 +409,16 @@ def mate_set_themes(ws_num, config):
     if wm_theme:
         subprocess.run(["gsettings", "set", "org.mate.Marco.general", "theme", wm_theme])
 
-# ---------- backend Openbox (feh) ----------
+# =============================================================================
+# GENERIC/OPENBOX BACKEND FUNCTIONS
+# =============================================================================
+
 def openbox_force_single_workspace_off():
-    # Openbox doesn't have this concept, so we can pass.
+    """Openbox doesn't have single workspace mode to disable."""
     pass
 
-def openbox_set_wallpaper(ws_num, image_path, scaling):
-    # 'feh' is not aware of workspaces in the same way,
-    # so we set the wallpaper for all of them.
+def openbox_set_wallpaper(ws_num: int, image_path: str, scaling: str):
+    """Set wallpaper for generic WMs using feh."""
     scaling_options = {
         'centered': '--bg-center',
         'scaled': '--bg-scale',
@@ -294,12 +426,10 @@ def openbox_set_wallpaper(ws_num, image_path, scaling):
     }
     
     style_val = scaling_options.get(scaling, '--bg-fill')
-    
-    # We use the subprocess to run feh in a separate process.
     subprocess.run(["feh", style_val, image_path])
 
-def openbox_set_themes(ws_num, config):
-    """Generic/Openbox theme setting - limited support"""
+def openbox_set_themes(ws_num: int, config):
+    """Generic/Openbox theme setting - limited support."""
     section = f"ws{ws_num + 1}"
     if not config.has_section(section):
         return
@@ -307,12 +437,12 @@ def openbox_set_themes(ws_num, config):
     # Generic WMs typically only support basic GTK themes
     gtk_theme = config.get(section, 'gtk_theme', fallback=None)
     if gtk_theme:
-        # This would set GTK theme for applications but not window manager
         print(f"Note: Generic WM - GTK theme would be: {gtk_theme}")
-        # Could use gsettings for GTK apps: subprocess.run(["gsettings", "set", "org.gtk.Settings.FileChooser", "theme", gtk_theme])
 
+# =============================================================================
+# BACKEND FUNCTION MAPPING
+# =============================================================================
 
-# ---------- Backend Function Mapping ----------
 backend_funcs = {
     "xfce": {
         "wallpaper": xfce_set_wallpaper,
@@ -346,29 +476,34 @@ backend_funcs = {
     }
 }
 
+# =============================================================================
+# UNIVERSAL DESKTOP FUNCTIONS
+# =============================================================================
 
-# ---------- Simplified Universal Functions ----------
 def force_single_workspace_off():
+    """Disable single workspace mode for current desktop environment."""
     func = backend_funcs.get(DE, {}).get("workspace_off")
     if func:
         func()
 
-def set_wallpaper(ws_num, image_path, scaling):
+def set_wallpaper(ws_num: int, image_path: str, scaling: str):
+    """Set wallpaper for specified workspace with given scaling."""
     func = backend_funcs.get(DE, {}).get("wallpaper")
     if func:
         func(ws_num, image_path, scaling)
 
-def set_panel_icon(icon_path):
+def set_panel_icon(icon_path: str):
+    """Set panel/menu icon for current desktop environment."""
     func = backend_funcs.get(DE, {}).get("icon")
     if func:
         func(icon_path)
 
-def set_themes(ws_num, config):
+def set_themes(ws_num: int, config):
+    """Apply theme settings for specified workspace."""
     func = backend_funcs.get(DE, {}).get("themes")
     if func:
         func(ws_num, config)
 
-# Keep screen blanking separate since it's XFCE-specific
 def configure_screen_blanking():
     """
     Configure screen blanking based on detected DE/session type.
@@ -383,8 +518,18 @@ def configure_screen_blanking():
         print(f"[AWP] Screen blanking disabled (paused={BLANKING_PAUSE}, timeout={BLANKING_TIMEOUT}s)")
         xfce_configure_screen_blanking(0)
 
-# ---------- CONKY INTEGRATION ----------
-def update_conky_state(workspace_name, wallpaper_path):
+# =============================================================================
+# CONKY INTEGRATION
+# =============================================================================
+
+def update_conky_state(workspace_name: str, wallpaper_path: str):
+    """
+    Update Conky state file with current workspace and wallpaper information.
+    
+    Args:
+        workspace_name (str): Current workspace name (e.g., 'ws1')
+        wallpaper_path (str): Path to current wallpaper image
+    """
     config = configparser.ConfigParser()
     config.read(CONFIG_PATH)
     icon_path = config.get(workspace_name, 'icon', fallback='')
@@ -402,11 +547,15 @@ def update_conky_state(workspace_name, wallpaper_path):
         f.write(f"flow={flow_val}\n")
         f.write(f"sort={sort_val}\n")
         f.write(f"view={view_val}\n")
-        f.write(f"blanking_timeout={BLANKING_FORMATTED}\n")  # ← SUPER CLEAN: Just write global
-        f.write(f"blanking_paused={str(BLANKING_PAUSE)}\n")  # ← Also use global
+        f.write(f"blanking_timeout={BLANKING_FORMATTED}\n")
+        f.write(f"blanking_paused={str(BLANKING_PAUSE)}\n")
 
-# ---------- helpers ----------
-def parse_timing(timing_str):
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def parse_timing(timing_str: str) -> int:
+    """Convert timing string (e.g., 30s, 7m, 2h) to seconds."""
     units = {'s': 1, 'm': 60, 'h': 3600}
     try:
         unit = timing_str[-1].lower()
@@ -415,17 +564,20 @@ def parse_timing(timing_str):
     except Exception:
         return None
 
-def get_current_workspace():
+def get_current_workspace() -> int:
+    """Get current workspace number using xprop."""
     ws_num = subprocess.check_output(
         ["xprop", "-root", "_NET_CURRENT_DESKTOP"], text=True
     ).strip().split()[-1]
     return int(ws_num)
 
 def ensure_awp_dir():
+    """Ensure AWP directory structure exists."""
     if not os.path.isdir(AWP_DIR):
         os.makedirs(AWP_DIR, exist_ok=True)
 
-def load_state():
+def load_state() -> dict:
+    """Load workspace state from JSON file."""
     if not os.path.isfile(STATE_PATH):
         return {}
     try:
@@ -434,17 +586,20 @@ def load_state():
     except Exception:
         return {}
 
-def save_state(state):
+def save_state(state: dict):
+    """Save workspace state to JSON file."""
     tmp = STATE_PATH + ".tmp"
     with open(tmp, "w") as f:
         json.dump(state, f)
     os.replace(tmp, STATE_PATH)
 
-def get_ws_key(ws_num):
+def get_ws_key(ws_num: int) -> str:
+    """Get workspace key for state storage."""
     return f"ws{ws_num+1}"
 
 def load_config():
-    global DE, SESSION_TYPE, BLANKING_PAUSE, BLANKING_TIMEOUT, BLANKING_FORMATTED  # ← FIXED: Added BLANKING_FORMATTED
+    """Load and parse configuration file."""
+    global DE, SESSION_TYPE, BLANKING_PAUSE, BLANKING_TIMEOUT, BLANKING_FORMATTED
     config = configparser.ConfigParser()
     if not os.path.isfile(CONFIG_PATH):
         print(f"Config file {CONFIG_PATH} not found. Run awp_setup.py first.")
@@ -480,17 +635,19 @@ def load_config():
             hours = timeout_sec // 3600
             minutes = (timeout_sec % 3600) // 60
             BLANKING_FORMATTED = f"{hours}h{minutes}m" if minutes > 0 else f"{hours}h"
-        print(f"[AWP] Blanking formatted: {BLANKING_FORMATTED}")  # ← DEBUG: Confirm it works
+        print(f"[AWP] Blanking formatted: {BLANKING_FORMATTED}")
     
     return config
 
-def load_images(folder_path):
+def load_images(folder_path: str) -> list:
+    """Load all JPEG and PNG images from specified folder."""
     p = Path(folder_path)
     if not p.is_dir():
         return []
     return list(p.glob("*.[jJ][pP][gG]")) + list(p.glob("*.[pP][nN][gG]"))
 
-def sort_images(images, order_key):
+def sort_images(images: list, order_key: str) -> list:
+    """Sort images based on specified order preference."""
     if order_key == 'name_az':
         return sorted(images, key=lambda f: f.name.lower())
     elif order_key == 'name_za':
@@ -501,9 +658,25 @@ def sort_images(images, order_key):
         return sorted(images, key=lambda f: f.stat().st_mtime)
     return images
 
-# ---------- workspace model ----------
+# =============================================================================
+# WORKSPACE MODEL
+# =============================================================================
+
 class Workspace:
-    def __init__(self, num, section):
+    """
+    Represents a workspace with its wallpaper configuration and state.
+    
+    Attributes:
+        num (int): Workspace number (0-based)
+        key (str): Workspace key for state storage (e.g., 'ws1')
+        folder (str): Path to wallpaper folder
+        timing (int): Rotation interval in seconds
+        mode (str): Rotation mode ('random' or 'sequential')
+        images (list): List of wallpaper images in folder
+        index (int): Current wallpaper index
+    """
+    
+    def __init__(self, num: int, section):
         self.num = num
         self.key = get_ws_key(num)
         self.folder = section.get('folder')
@@ -518,6 +691,7 @@ class Workspace:
         self.reload_images_and_index()
 
     def reload_images_and_index(self):
+        """Reload images and configuration from disk."""
         # Reload all config fields
         config = configparser.ConfigParser()
         config.read(CONFIG_PATH)
@@ -542,7 +716,8 @@ class Workspace:
         if not self.images or self.index >= len(self.images):
             self.index = 0
 
-    def pick_next_index(self):
+    def pick_next_index(self) -> int:
+        """Determine next wallpaper index based on rotation mode."""
         if not self.images:
             return 0
         if self.mode == 'random':
@@ -554,7 +729,8 @@ class Workspace:
             return new_idx
         return (self.index + 1) % len(self.images)
 
-    def apply_index(self, new_index):
+    def apply_index(self, new_index: int):
+        """Apply new wallpaper index and update state."""
         state = load_state()
         self.index = new_index
         state[self.key] = self.index
@@ -562,10 +738,19 @@ class Workspace:
 
         current_wallpaper_path = str(self.images[self.index])
         set_wallpaper(self.num, current_wallpaper_path, self.scaling)
-        update_conky_state(f"ws{self.num+1}", current_wallpaper_path)
+        
+        # =========================================================================
+        # CONKY INTEGRATION (OPTIONAL)
+        # Uncomment the line below to enable real-time wallpaper info for Conky
+        # update_conky_state(f"ws{self.num+1}", current_wallpaper_path)
+        # =========================================================================
 
-# ---------- main loop ----------
-def main_loop(workspaces):
+# =============================================================================
+# MAIN LOOP
+# =============================================================================
+
+def main_loop(workspaces: dict):
+    """Main daemon loop managing workspace wallpaper rotation."""
     last_ws = None
     while True:
         now = time.time()
@@ -587,7 +772,6 @@ def main_loop(workspaces):
             if ws_key in config:
                 icon_path = config[ws_key].get('icon', '')
                 if icon_path:
-                    # Call the new universal function
                     set_panel_icon(icon_path)
             
             # Apply theme changes on workspace switch
@@ -606,15 +790,15 @@ def main_loop(workspaces):
         time.sleep(0.5)
 
 def main():
+    """Main daemon entry point."""
     ensure_awp_dir()
-    
     config = load_config()
 
-    # ← UPDATED: Configure screen blanking - now uses INI values
+    # Configure screen blanking based on INI settings
     configure_screen_blanking()
-    
     force_single_workspace_off()
     
+    # Load workspace configurations
     try:
         n_ws = int(config['general']['workspaces'])
     except Exception:
@@ -622,12 +806,12 @@ def main():
         sys.exit(1)
 
     workspaces = {}
-    for i in range(1, n_ws+1):
+    for i in range(1, n_ws + 1):
         sec = f"ws{i}"
         if sec not in config:
             print(f"Warning: missing section [{sec}] in config, skipping.")
             continue
-        ws = Workspace(i-1, config[sec])
+        ws = Workspace(i - 1, config[sec])
         workspaces[ws.num] = ws
 
     print(f"Loaded {len(workspaces)} workspaces. State: {STATE_PATH}")

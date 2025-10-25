@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+"""
+AWP - Automated Wallpaper Program
+Initial Setup Wizard
+
+Creates initial configuration file and directory structure for AWP.
+Part of the AWP wallpaper automation system.
+
+Features:
+- Desktop environment auto-detection
+- Professional user prompts with validation
+- Workspace configuration with theme support
+- Smart dependency checking
+- Autostart setup
+"""
+
 import configparser
 import os
 import subprocess
@@ -7,7 +22,9 @@ import shutil
 from PIL import Image
 import textwrap
 
-# Define directories
+# =============================================================================
+# PATHS AND CONSTANTS
+# =============================================================================
 AWP_DIR = os.path.expanduser("~/awp")
 CONFIG_PATH = os.path.join(AWP_DIR, "awp_config.ini")
 BACKUP_PATH = os.path.join(AWP_DIR, "awp_config.ini.bak")
@@ -15,163 +32,302 @@ BASE_FOLDER = os.path.expanduser("~")
 ICON_DIR = os.path.join(AWP_DIR, "logos")
 USER_HOME = os.path.expanduser("~")
 
-def wrap_text(text, width=80):
-    """Wrap text to a specified width for better readability in terminals."""
+# =============================================================================
+# CONFIGURATION MAPPINGS
+# =============================================================================
+ORDER_MAP = {
+    'a': 'name_az', 'z': 'name_za', 
+    'm': 'name_old', 'M': 'name_new'
+}
+SCALING_MAP = {
+    'c': 'centered', 's': 'scaled', 'z': 'zoomed'
+}
+MODE_MAP = {
+    'r': 'random', 's': 'sequential'
+}
+
+def print_header(text: str):
+    """Print a formatted section header."""
+    print(f"\n{'='*60}")
+    print(f" {text.upper()} ")
+    print(f"{'='*60}")
+
+def print_success(message: str):
+    """Print a success message."""
+    print(f"✅ {message}")
+
+def print_warning(message: str):
+    """Print a warning message."""
+    print(f"⚠️  {message}")
+
+def print_error(message: str):
+    """Print an error message."""
+    print(f"❌ {message}")
+
+def wrap_text(text: str, width: int = 70) -> str:
+    """Wrap text to specified width for better readability."""
     return '\n'.join(textwrap.wrap(text, width=width))
 
-def run_shell(cmd, error_msg="Command failed"):
-    """Run a shell command and return True if successful, False otherwise."""
+def run_shell(cmd: str, error_msg: str = "Command failed") -> str:
+    """
+    Run shell command with proper error handling.
+    
+    Args:
+        cmd (str): Command to execute
+        error_msg (str): Custom error message
+        
+    Returns:
+        str: Command output or None if failed
+    """
     try:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=True)
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, check=True
+        )
         return result.stdout.strip()
     except subprocess.CalledProcessError as e:
-        print(wrap_text(f"{error_msg}: {cmd}"))
-        print(wrap_text(f"Error output: {e.stderr}"))
+        print_warning(f"{error_msg}: {e.stderr.strip()}")
         return None
 
-def install_dependencies(de):
-    """Install required dependencies for AWP with verbose output."""
-    print(wrap_text("Starting dependency installation..."))
+def check_dependencies():
+    """
+    Check for required Python dependencies and inform user.
+    Does not block setup - daemon works without PyQt5.
+    """
+    print_header("Dependency Check")
     
-    # Define dependencies
-    deps = "conky-all python3-psutil libcairo2 libx11-6 libxft2"
-    if de == "unknown":
-        deps += " feh"
+    required_packages = {
+        'PIL': 'Pillow (image processing)',
+        'PyQt5': 'PyQt5 (graphical interface)',
+    }
     
-    # Update package lists
-    print(wrap_text("Updating package lists with 'sudo apt update'..."))
-    if not run_shell("sudo apt update", "Failed to update package lists"):
-        print(wrap_text("Package list update failed. Please run 'sudo apt update' manually."))
-        sys.exit(1)
-    print(wrap_text("Package lists updated successfully."))
-
-    # Install system dependencies
-    print(wrap_text(f"Installing system dependencies: {deps}..."))
-    if not run_shell(f"sudo apt install -y {deps}", "Failed to install system dependencies"):
-        print(wrap_text(f"Please run 'sudo apt install -y {deps}' manually."))
-        sys.exit(1)
-    print(wrap_text("System dependencies installed successfully."))
-
-    # Check if psutil is installed
-    print(wrap_text("Checking for Python psutil module..."))
-    if not run_shell("python3 -m pip show psutil", "Checking psutil..."):
-        print(wrap_text("psutil not found. Installing psutil..."))
-        if not run_shell("python3 -m pip install --user psutil", "Failed to install psutil"):
-            print(wrap_text("Please run 'python3 -m pip install --user psutil' manually."))
-            sys.exit(1)
-        print(wrap_text("psutil installed successfully."))
+    all_available = True
+    
+    for package, description in required_packages.items():
+        try:
+            if package == 'PIL':
+                import PIL
+            elif package == 'PyQt5':
+                from PyQt5.QtWidgets import QApplication
+            print_success(f"{package}: {description}")
+        except ImportError:
+            print_error(f"Missing: {package} - {description}")
+            if package == 'PyQt5':
+                print_warning("  → Dashboard will not work without PyQt5")
+            else:
+                print_warning("  → Core functionality affected")
+            print_warning(f"  → Install with: pip3 install {package.lower()}")
+            all_available = False
+    
+    # Simple Conky check
+    conky_available = run_shell("which conky", "Checking Conky") is not None
+    if not conky_available:
+        print_warning("Conky not installed - required for experimental Conky features")
+        print_warning("  → Install with: sudo apt install conky-all")
+    
+    if not all_available:
+        print_warning("Note: AWP daemon will work, but some features require dependencies")
     else:
-        print(wrap_text("psutil is already installed."))
-    
-    print(wrap_text("All dependencies installed successfully."))
+        print_success("All dependencies available")
 
-def parse_timing(timing_str):
-    """Convert timing string (e.g., 30s, 7m, 2h) to seconds."""
+def parse_timing(timing_str: str) -> int:
+    """
+    Convert timing string to seconds.
+    
+    Args:
+        timing_str (str): Timing string (e.g., '30s', '5m', '1h')
+        
+    Returns:
+        int: Seconds or None if invalid
+    """
     units = {'s': 1, 'm': 60, 'h': 3600}
+    
+    if not timing_str:
+        return None
+        
     try:
         unit = timing_str[-1].lower()
         number = int(timing_str[:-1])
         return number * units.get(unit, 60)
-    except Exception:
+    except (ValueError, IndexError):
         return None
 
-def ask(prompt, validate=None, err_msg="Invalid input, try again."):
-    """Prompt user and validate input."""
+def ask(prompt: str, validate=None, default: str = None) -> str:
+    """
+    Prompt user with validation and default support.
+    
+    Args:
+        prompt (str): Prompt text
+        validate (callable): Validation function
+        default (str): Default value if user presses Enter
+        
+    Returns:
+        str: Validated user input
+    """
     while True:
-        print(wrap_text(prompt), end='')
-        val = input().strip()
-        if validate is None or validate(val):
-            return val
-        print(wrap_text(err_msg))
+        # Always add default hint if provided
+        if default is not None:
+            full_prompt = f"{prompt} [{default}]: "
+        else:
+            full_prompt = f"{prompt}: "
 
-ORDER_MAP = {
-    'a': 'name_az',
-    'z': 'name_za',
-    'm': 'name_old',
-    'M': 'name_new'
-}
-SCALING_MAP = {'c': 'centered', 's': 'scaled', 'z': 'zoomed'}
-MODE_MAP = {'r': 'random', 's': 'sequential'}
+        print(wrap_text(full_prompt), end='')
+        user_input = input().strip()
+        
+        # Use default if provided and input is empty
+        if not user_input and default is not None:
+            return default
+            
+        if not user_input:
+            print_warning("Input cannot be empty")
+            continue
+            
+        if validate is None or validate(user_input):
+            return user_input
+            
+        print_warning("Invalid input, please try again")
 
-def detect_de():
-    """Detect desktop environment via XDG_CURRENT_DESKTOP."""
+def detect_de() -> str:
+    """Detect desktop environment."""
     de = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
-    if "xfce" in de: return "xfce"
-    elif "gnome" in de: return "gnome"
-    elif "cinnamon" in de: return "cinnamon"
-    elif "mate" in de: return "mate"
-    return "unknown"
+    
+    if "xfce" in de:
+        return "xfce"
+    elif "gnome" in de:
+        return "gnome"
+    elif "cinnamon" in de:
+        return "cinnamon"
+    elif "mate" in de:
+        return "mate"
+    else:
+        return "generic"  # Changed from "unknown" to "generic"
 
-def detect_session_type():
+def detect_session_type() -> str:
     """Detect session type (X11 or Wayland)."""
-    if os.environ.get('WAYLAND_DISPLAY'): return 'wayland'
-    elif os.environ.get('DISPLAY'): return 'x11'
-    else: return 'unknown'
+    if os.environ.get('WAYLAND_DISPLAY'):
+        return 'wayland'
+    elif os.environ.get('DISPLAY'):
+        return 'x11'
+    else:
+        return 'unknown'
 
-def get_workspaces(de):
-    """Detect workspace count and dynamic/fixed state."""
+def get_workspaces(de: str) -> tuple:
+    """
+    Detect workspace count and dynamic/fixed state.
+    
+    Args:
+        de (str): Desktop environment name
+        
+    Returns:
+        tuple: (workspace_count, is_dynamic) or (None, None) if undetectable
+    """
     try:
         if de == "xfce":
-            count = run_shell("xfconf-query -c xfwm4 -p /general/workspace_count",
-                              "Failed to get XFCE workspace count")
+            count = run_shell(
+                "xfconf-query -c xfwm4 -p /general/workspace_count",
+                "Failed to get XFCE workspace count"
+            )
             return (int(count), False) if count else (None, None)
+            
         elif de == "gnome":
-            count = run_shell("gsettings get org.gnome.desktop.wm.preferences num-workspaces",
-                              "Failed to get GNOME workspace count")
-            dynamic = run_shell("gsettings get org.gnome.shell.extensions.dash-to-dock dynamic-workspaces",
-                                "Failed to check GNOME dynamic workspaces")
-            return (int(count), dynamic == "true") if count and dynamic else (None, None)
+            count = run_shell(
+                "gsettings get org.gnome.desktop.wm.preferences num-workspaces",
+                "Failed to get GNOME workspace count"
+            )
+            # Clean up gsettings output
+            if count and count != '':
+                count = count.strip("'")
+                return (int(count), False) if count.isdigit() else (None, None)
+                
         elif de == "mate":
-            count = run_shell("gsettings get org.mate.Marco.general num-workspaces",
-                              "Failed to get MATE workspace count")
-            return (int(count), False) if count else (None, None)
+            count = run_shell(
+                "gsettings get org.mate.Marco.general num-workspaces",
+                "Failed to get MATE workspace count"
+            )
+            if count and count != '':
+                count = count.strip("'")
+                return (int(count), False) if count.isdigit() else (None, None)
+                
         elif de == "cinnamon":
-            count = run_shell("gsettings get org.cinnamon.desktop.wm.preferences num-workspaces",
-                              "Failed to get Cinnamon workspace count")
-            return (int(count), False) if count else (None, None)
-        else:
-            return (None, None)
-    except (ValueError, TypeError):
-        print(wrap_text("Warning: Could not determine workspace count dynamically."))
-        return (None, None)
+            count = run_shell(
+                "gsettings get org.cinnamon.desktop.wm.preferences num-workspaces",
+                "Failed to get Cinnamon workspace count"
+            )
+            if count and count != '':
+                count = count.strip("'")
+                return (int(count), False) if count.isdigit() else (None, None)
+                
+    except (ValueError, TypeError) as e:
+        print_warning(f"Could not parse workspace count: {e}")
+        
+    return (None, None)
 
-def set_fixed_workspaces(de, num_ws):
-    """Set a fixed number of workspaces for supported DEs."""
+def set_fixed_workspaces(de: str, num_ws: int):
+    """
+    Set fixed number of workspaces for supported DEs.
+    
+    Args:
+        de (str): Desktop environment name
+        num_ws (int): Number of workspaces
+    """
     num_ws = int(num_ws)
+    
     if de == "gnome":
-        run_shell("gsettings set org.gnome.shell.extensions.dash-to-dock dynamic-workspaces false",
-                  "Failed to disable GNOME dynamic workspaces")
-        run_shell(f"gsettings set org.gnome.desktop.wm.preferences num-workspaces {num_ws}",
-                  "Failed to set GNOME workspace count")
+        run_shell(
+            "gsettings set org.gnome.shell.extensions.dash-to-dock dynamic-workspaces false",
+            "Failed to disable GNOME dynamic workspaces"
+        )
+        run_shell(
+            f"gsettings set org.gnome.desktop.wm.preferences num-workspaces {num_ws}",
+            "Failed to set GNOME workspace count"
+        )
+        
     elif de == "mate":
-        run_shell(f"gsettings set org.mate.Marco.general num-workspaces {num_ws}",
-                  "Failed to set MATE workspace count")
+        run_shell(
+            f"gsettings set org.mate.Marco.general num-workspaces {num_ws}",
+            "Failed to set MATE workspace count"
+        )
+        
     elif de == "cinnamon":
-        run_shell(f"gsettings set org.cinnamon.desktop.wm.preferences num-workspaces {num_ws}",
-                  "Failed to set Cinnamon workspace count")
+        run_shell(
+            f"gsettings set org.cinnamon.desktop.wm.preferences num-workspaces {num_ws}",
+            "Failed to set Cinnamon workspace count"
+        )
+        
     elif de == "xfce":
-        run_shell(f"xfconf-query -c xfwm4 -p /general/workspace_count -s {num_ws}",
-                  "Failed to set XFCE workspace count")
+        run_shell(
+            f"xfconf-query -c xfwm4 -p /general/workspace_count -s {num_ws}",
+            "Failed to set XFCE workspace count"
+        )
+        
     else:
-        print(wrap_text("For generic WM, configure fixed workspaces manually."))
+        print_warning("For generic window managers, configure workspaces manually")
 
-def get_icon_color(image_path):
-    """Detect main icon color (ignores transparency)."""
+def get_icon_color(image_path: str) -> str:
+    """
+    Detect dominant color from image.
+    
+    Args:
+        image_path (str): Path to image file
+        
+    Returns:
+        str: Hex color code or empty string on error
+    """
     try:
         with Image.open(image_path) as img:
             rgba_img = img.convert("RGBA")
             for r, g, b, a in rgba_img.getdata():
-                if a > 0:
+                if a > 0:  # Ignore transparent pixels
                     return f'#{r:02x}{g:02x}{b:02x}'
             return ""
     except Exception as e:
-        print(wrap_text(f"Warning: Could not detect icon color. {e}"))
+        print_warning(f"Could not detect icon color: {e}")
         return ""
 
 def setup_autostart():
-    """Create autostart entry for AWP."""
+    """Create autostart entry for AWP daemon."""
     autostart_dir = os.path.expanduser("~/.config/autostart")
     os.makedirs(autostart_dir, exist_ok=True)
+    
     desktop_file = os.path.join(autostart_dir, "awp_start.desktop")
     desktop_content = """[Desktop Entry]
 Type=Application
@@ -179,47 +335,68 @@ Exec=sh -c '$HOME/awp/awp_start.sh'
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
-Name=AWP
-Comment=Start AWP daemon (with optional Conky)
+Name=AWP Wallpaper Manager
+Comment=Automated wallpaper and theme management
 """
     try:
         with open(desktop_file, "w") as f:
             f.write(desktop_content)
-        print(wrap_text(f"[+] Autostart entry created at {desktop_file}"))
+        print_success(f"Autostart entry created: {desktop_file}")
     except IOError as e:
-        print(wrap_text(f"[!] Failed to create autostart entry: {e}"))
+        print_error(f"Failed to create autostart entry: {e}")
 
 def print_keybinding_instructions():
-    """Print keybinding instructions for wallpaper navigation."""
-    print(wrap_text("\nTo use the previous/next wallpaper feature, create these keybindings:"))
-    print(f"  - Next: python3 {USER_HOME}/awp/awp_prev_next.py next  (Shortcut: Super+Right)")
-    print(f"  - Prev: python3 {USER_HOME}/awp/awp_prev_next.py prev  (Shortcut: Super+Left)")
+    """Print instructions for setting up keybindings."""
+    print_header("Optional Keybindings")
+    print(wrap_text(
+        "For manual wallpaper navigation, you can create these keybindings in your "
+        "system settings:"
+    ))
+    print(f"\n  Next Wallpaper: ~/awp/awp_nav.py next")
+    print(f"  Previous Wallpaper: ~/awp/awp_nav.py prev")
+    print(f"  Delete Current Wallpaper: ~/awp/awp_nav.py delete")
+    print("\nSuggested shortcuts:")
+    print("  Next: Super+Right")
+    print("  Previous: Super+Left") 
+    print("  Delete: Super+Delete")
 
 def configure_screen_blanking(config):
     """Configure screen blanking timeout."""
-    print("\n" + "="*50)
-    print("SCREEN BLANKING CONFIGURATION")
-    print("="*50)
-    use_blanking = ask("Enable screen blanking after inactivity? [y/N]: ",
-                       lambda v: v.lower() in ['y','n'], "Enter 'y' or 'n'.")
+    print_header("Screen Blanking Configuration")
+    
+    print(wrap_text(
+        "AWP can manage screen blanking timeouts for XFCE/X11 sessions. "
+        "This controls when your screen goes blank during inactivity."
+    ))
+    
+    use_blanking = ask(
+        "Enable screen blanking management? [y/N]: ",
+        lambda v: v.lower() in ['y', 'n', ''],
+        default='n'
+    )
+    
     if use_blanking.lower() == 'y':
-        timing = ask("Screen blanking timeout (e.g., 20m, 30s, 1h) [20m]: ",
-                     lambda t: parse_timing(t) is not None, "Enter valid timing.")
-        if not timing: timing = "20m"
+        timing = ask(
+            "Blank after (e.g., 5m, 10m, 30m): ",
+            lambda t: parse_timing(t) is not None,
+            default='20m'
+        )
+        
         timeout_seconds = parse_timing(timing)
         if timeout_seconds:
-            config.set('general','blanking_timeout',str(timeout_seconds))
-            config.set('general','blanking_pause','false')
-            print(f"✓ Screen blanking enabled: {timing}")
+            config['general']['blanking_timeout'] = str(timeout_seconds)
+            config['general']['blanking_pause'] = 'false'
+            print_success(f"Screen blanking enabled: {timing}")
         else:
-            config.set('general','blanking_timeout','0')
-            config.set('general','blanking_pause','true')
+            config['general']['blanking_timeout'] = '0'
+            config['general']['blanking_pause'] = 'true'
+            print_warning("Invalid timing, blanking disabled")
     else:
-        config.set('general','blanking_timeout','0')
-        config.set('general','blanking_pause','true')
-        print("✓ Screen blanking disabled")
-        
-def get_available_themes():
+        config['general']['blanking_timeout'] = '0'
+        config['general']['blanking_pause'] = 'true'
+        print_success("Screen blanking management disabled")
+
+def get_available_themes() -> dict:
     """Discover available themes on the system and return categorized lists."""
     themes = {
         'icon_themes': [],
@@ -229,7 +406,7 @@ def get_available_themes():
         'wm_themes': []        # For window borders specifically
     }
     
-    # Discover icon themes - FIXED: include home directory properly
+    # Discover icon themes
     icon_paths = [
         '/usr/share/icons', 
         os.path.expanduser('/usr/local/share/icons'),
@@ -246,7 +423,7 @@ def get_available_themes():
             except (PermissionError, OSError):
                 pass  # Skip directories we can't read
     
-    # Discover ALL themes - FIXED: include home directory properly
+    # Discover ALL themes
     theme_paths = [
         '/usr/share/themes',
         '/usr/local/share/themes', 
@@ -292,13 +469,13 @@ def get_available_themes():
             if any('cinnamon' in path for path in theme_paths_to_check if os.path.exists(path)):
                 desktop_themes.append(theme)
     
-    # FIXED: Sort all lists alphabetically
+    # Sort all lists alphabetically
     themes['gtk_themes'] = sorted(list(set(all_themes)))
     themes['desktop_themes'] = sorted(list(set(desktop_themes)))
     themes['wm_themes'] = sorted(list(set(wm_themes)))
     themes['icon_themes'] = sorted(list(set(themes['icon_themes'])))
     
-    # Discover cursor themes - FIXED: include home directory and sort
+    # Discover cursor themes
     cursor_themes = []
     for path in icon_paths:
         if os.path.exists(path):
@@ -314,7 +491,7 @@ def get_available_themes():
     
     return themes
 
-def show_numbered_menu(items, title, page_size=20):
+def show_numbered_menu(items: list, title: str, page_size: int = 20) -> str:
     """Display a paginated numbered menu for theme selection."""
     if not items:
         print(f"\nNo {title} found on system.")
@@ -356,224 +533,353 @@ def show_numbered_menu(items, title, page_size=20):
         except ValueError:
             print("Please enter a valid number")
 
-def configure_workspace_themes(config, section, ws_num, de):
+def configure_workspace_themes(config, section: str, ws_num: int, de: str):
     """Configure themes for a specific workspace based on DE."""
     print(f"\n{'='*40}")
     print(f"THEME CONFIGURATION FOR WORKSPACE {ws_num} ({de.upper()})")
     print(f"{'='*40}")
     
-    # For generic/unknown DEs, offer limited theme support
-    if de == "unknown":
-        print("Generic desktop detected - limited theme support available")
-        print("Only basic GTK and icon themes can be set automatically")
-        
-        enable_themes = ask("Enable basic theme switching? [y/N]: ",
-                           lambda v: v.lower() in ['y','n'])
-        if enable_themes.lower() != 'y':
-            return
-        
-        themes = get_available_themes()
-        
-        icon_theme = show_numbered_menu(themes['icon_themes'], "ICON THEMES")
-        if icon_theme:
-            config[section]['icon_theme'] = icon_theme
-            print(f"✓ Icon theme: {icon_theme}")
-        
-        gtk_theme = show_numbered_menu(themes['gtk_themes'], "GTK THEMES")
-        if gtk_theme:
-            config[section]['gtk_theme'] = gtk_theme
-            print(f"✓ GTK theme: {gtk_theme}")
-        
-        print("Note: Cursor and window themes may need manual configuration")
-        return
-    
-    # For supported DEs (cinnamon, xfce, gnome, mate)
     themes = get_available_themes()
     
     enable_themes = ask("Enable theme switching for this workspace? [y/N]: ",
                        lambda v: v.lower() in ['y','n'])
     
     if enable_themes.lower() != 'y':
-        print("Skipping theme configuration for this workspace")
+        # USER SAID NO TO THEMES - STILL SET ALL DEFAULTS for INI compatibility
+        config[section]['icon_theme'] = 'Adwaita'
+        config[section]['gtk_theme'] = 'Adwaita' 
+        config[section]['cursor_theme'] = 'Adwaita'
+        config[section]['desktop_theme'] = 'Adwaita'
+        config[section]['wm_theme'] = 'Adwaita'
+        print("Theme switching disabled - all theme variables set to defaults for INI compatibility")
         return
     
-    # SET DEFAULTS FOR ALL THEME TYPES FIRST
+    # USER SAID YES TO THEMES - proceed with configuration
+    # SET ALL 5 THEME DEFAULTS (always written to INI)
     config[section]['icon_theme'] = 'Adwaita'
-    config[section]['gtk_theme'] = 'Adwaita'
+    config[section]['gtk_theme'] = 'Adwaita' 
     config[section]['cursor_theme'] = 'Adwaita'
+    config[section]['desktop_theme'] = 'Adwaita'  # Cinnamon-only but always written
+    config[section]['wm_theme'] = 'Adwaita'       # XFCE/MATE but always written
     
-    # Common theme menus for all supported DEs
+    # CORE THEMES: Available in ALL desktop environments (always ask)
+    print("CORE THEMES (available in all desktop environments):")
+    print("-" * 50)
+    
     icon_theme = show_numbered_menu(themes['icon_themes'], "ICON THEMES")
     if icon_theme:
         config[section]['icon_theme'] = icon_theme
-        print(f"✓ Icon theme: {icon_theme}")
     
     gtk_theme = show_numbered_menu(themes['gtk_themes'], "GTK THEMES")
     if gtk_theme:
         config[section]['gtk_theme'] = gtk_theme
-        print(f"✓ GTK theme: {gtk_theme}")
     
-    cursor_theme = show_numbered_menu(themes['cursor_themes'], "CURSOR THEMES")
+    cursor_theme = show_numbered_menu(themes['cursor_themes'], "CURSOR THEMES") 
     if cursor_theme:
         config[section]['cursor_theme'] = cursor_theme
-        print(f"✓ Cursor theme: {cursor_theme}")
     
-    # DE-specific configuration
+    # DE-SPECIFIC THEMES: Only show menus for relevant themes
+    print("\nEXTENDED THEMES (desktop environment specific):")
+    print("-" * 50)
+    
     if de == "cinnamon":
-        config[section]['desktop_theme'] = 'Adwaita'
-        config[section]['wm_theme'] = 'Adwaita'
-        
+        # Only ask for desktop_theme (Cinnamon-specific)
         desktop_theme = show_numbered_menu(themes['desktop_themes'], "CINNAMON DESKTOP THEMES")
         if desktop_theme:
             config[section]['desktop_theme'] = desktop_theme
-            print(f"✓ Desktop theme: {desktop_theme}")
-        
-        wm_theme = show_numbered_menu(themes['wm_themes'], "CINNAMON WINDOW THEMES")
-        if wm_theme:
-            config[section]['wm_theme'] = wm_theme
-            print(f"✓ Window theme: {wm_theme}")
-    
+        # wm_theme remains as default (Adwaita) - not used in Cinnamon
+        print("✓ Window borders included in desktop theme")
+            
     elif de == "xfce":
-        config[section]['wm_theme'] = 'Adwaita'
-        
+        # Only ask for wm_theme (XFCE-specific)
         wm_theme = show_numbered_menu(themes['wm_themes'], "XFCE WINDOW THEMES")
         if wm_theme:
             config[section]['wm_theme'] = wm_theme
-            print(f"✓ Window theme: {wm_theme}")
-    
+        # desktop_theme remains as default (Adwaita) - not used in XFCE
+        print("✓ Desktop theme not applicable for XFCE")
+            
     elif de == "gnome":
-        config[section]['shell_theme'] = 'Adwaita'
-        
-        shell_theme = show_numbered_menu(themes['gtk_themes'], "GNOME SHELL THEMES")
-        if shell_theme:
-            config[section]['shell_theme'] = shell_theme
-            print(f"✓ Shell theme: {shell_theme}")
-    
+        # NO shell_theme anymore - just skip extended themes for GNOME
+        print("✓ GNOME: Using core themes only (GTK, Icons, Cursors)")
+        print("✓ Desktop theme not applicable for GNOME") 
+        print("✓ Window theme handled by GTK theme in GNOME")
+            
     elif de == "mate":
-        config[section]['marco_theme'] = 'Adwaita'
-        
-        marco_theme = show_numbered_menu(themes['wm_themes'], "MATE MARCO THEMES")
-        if marco_theme:
-            config[section]['marco_theme'] = marco_theme
-            print(f"✓ Marco theme: {marco_theme}")
+        # Only ask for wm_theme (MATE-specific)
+        wm_theme = show_numbered_menu(themes['wm_themes'], "MATE WINDOW THEMES")
+        if wm_theme:
+            config[section]['wm_theme'] = wm_theme
+        # desktop_theme remains as default (Adwaita) - not used in MATE
+        print("✓ Desktop theme not applicable for MATE")
     
-    print(f"✓ Theme configuration for workspace {ws_num} complete")
+    # GENERIC/UNKNOWN DE: Offer window and desktop themes as optional
+    elif de == "generic":
+        print("Generic desktop - extended themes available as experimental:")
+        
+        # Offer window themes
+        if themes['wm_themes']:
+            wm_theme = show_numbered_menu(themes['wm_themes'], "WINDOW THEMES (Experimental)")
+            if wm_theme:
+                config[section]['wm_theme'] = wm_theme
+        
+        # Offer desktop themes  
+        if themes['desktop_themes']:
+            desktop_theme = show_numbered_menu(themes['desktop_themes'], "DESKTOP THEMES (Experimental)")
+            if desktop_theme:
+                config[section]['desktop_theme'] = desktop_theme
+    
+    print_success(f"Theme configuration for workspace {ws_num} complete")
+    print(f"INI will contain all 5 theme variables for compatibility")
 
 def main():
-    """Main setup routine."""
-    print(wrap_text("Welcome to AWP initial configuration setup!"))
-
+    """Main setup routine for AWP configuration."""
+    print_header("AWP Automated Wallpaper Program")
+    print(wrap_text(
+        "Welcome to AWP setup! This wizard will guide you through configuring "
+        "automated wallpaper rotation and theme management for your workspaces."
+    ))
+    
+    # -------------------------------------------------------------------------
+    # DEPENDENCY CHECK
+    # -------------------------------------------------------------------------
+    # Just check and inform - don't block setup
+    check_dependencies()
+    
+    # -------------------------------------------------------------------------
+    # ENVIRONMENT DETECTION
+    # -------------------------------------------------------------------------
+    print_header("Environment Detection")
     de = detect_de()
-    print(wrap_text(f"\nDetected desktop environment: {de}"))
+    print_success(f"Desktop environment: {de}")
+    
     session_type = detect_session_type()
-    print(wrap_text(f"\nDetected session type: {session_type}"))
-
-    # Handle existing config
+    print_success(f"Session type: {session_type}")
+    
+    # -------------------------------------------------------------------------
+    # EXISTING CONFIG HANDLING
+    # -------------------------------------------------------------------------
     if os.path.isfile(CONFIG_PATH):
-        choice = ask("\nawp_config.ini exists. (c=create new, e=exit): ",
-                     lambda v: v.lower() in ['c','e'])
+        print_warning("Existing configuration file found")
+        choice = ask(
+            "Create new config (c) or exit (e) [c/e]? ",
+            lambda v: v.lower() in ['c', 'e'],
+            default='c'
+        )
         if choice == 'e':
-            print("Exiting without changes.")
+            print_success("Setup cancelled - existing configuration preserved")
             sys.exit(0)
-        shutil.copy(CONFIG_PATH,BACKUP_PATH)
-        print(f"Backup created: {BACKUP_PATH}")
-    else:
-        print("No existing configuration, proceeding...")
-
-    if ask("Install required dependencies? (y/n): ",
-           lambda v: v.lower() in ['y','n']) == 'y':
-        install_dependencies(de)
-
+        
+        # Create backup
+        shutil.copy(CONFIG_PATH, BACKUP_PATH)
+        print_success(f"Backup created: {BACKUP_PATH}")
+    
+    # -------------------------------------------------------------------------
+    # BASIC CONFIGURATION
+    # -------------------------------------------------------------------------
     config = configparser.ConfigParser()
-    config['general'] = {'os_detected':de,'session_type':session_type}
+    config['general'] = {
+        'os_detected': de,
+        'session_type': session_type,
+        'blanking_timeout': '0',      # Default: disabled
+        'blanking_pause': 'true'      # Default: paused
+    }
+    
     configure_screen_blanking(config)
-
-    # Logos folder
-    if os.path.exists(ICON_DIR): shutil.rmtree(ICON_DIR)
+    
+    # -------------------------------------------------------------------------
+    # DIRECTORY SETUP
+    # -------------------------------------------------------------------------
+    print_header("Directory Setup")
+    if os.path.exists(ICON_DIR):
+        shutil.rmtree(ICON_DIR)
     os.makedirs(ICON_DIR)
-
-    # Workspaces
+    print_success(f"Icon directory created: {ICON_DIR}")
+    
+    # -------------------------------------------------------------------------
+    # WORKSPACE CONFIGURATION
+    # -------------------------------------------------------------------------
+    print_header("Workspace Configuration")
+    
     n_ws, is_dynamic = get_workspaces(de)
     if n_ws is None:
-        n_ws = int(ask("Enter the number of workspaces: ",
-                       lambda v: v.isdigit() and int(v)>0))
+        n_ws = ask(
+            "Number of workspaces to configure: ",
+            lambda v: v.isdigit() and 1 <= int(v) <= 8,
+            default='3'
+        )
+        n_ws = int(n_ws)
     else:
-        print(f"Detected {n_ws} workspaces.")
+        print_success(f"Detected {n_ws} workspaces")
+    
     if is_dynamic:
-        if ask("Dynamic workspaces detected. Set fixed number? (y/n): ",
-               lambda v: v in ['y','n']) == 'y':
-            n_ws = int(ask("How many fixed workspaces? ",
-                           lambda v: v.isdigit() and int(v)>0))
+        print_warning("Dynamic workspaces detected")
+        set_fixed = ask(
+            "Set fixed number of workspaces? [y/N]: ",
+            lambda v: v.lower() in ['y', 'n', ''],
+            default='n'
+        )
+        if set_fixed.lower() == 'y':
+            n_ws = ask(
+                "Fixed workspace count: ",
+                lambda v: v.isdigit() and 1 <= int(v) <= 8,
+                default=str(n_ws)
+            )
+            n_ws = int(n_ws)
             set_fixed_workspaces(de, n_ws)
+    
     config['general']['workspaces'] = str(n_ws)
-
-    # Workspace loop
-    used_folders=set()
-    for i in range(1,n_ws+1):
-        section=f"ws{i}"; config[section]={}
-        folder_name = ask(f"Folder name for workspace {i} (inside {BASE_FOLDER}): ",
-                          lambda v: os.path.isdir(os.path.join(BASE_FOLDER,v))
-                          and os.path.join(BASE_FOLDER,v) not in used_folders)
-        full_path=os.path.join(BASE_FOLDER,folder_name)
-        config[section]['folder']=full_path; used_folders.add(full_path)
-
-        icon_path = ask(f"Icon file path for workspace {i}: ", os.path.isfile)
-        _,ext=os.path.splitext(icon_path)
-        dest=os.path.join(ICON_DIR,f"{folder_name}{ext}")
-        shutil.copy(icon_path,dest); config[section]['icon']=dest
-        color=get_icon_color(dest)
-        if color:
-            config[section]['icon_color']=color
-            config[section]['color_variable']=f"{section}_color"
-
-        timing=ask(f"Timing for workspace {i} (e.g. 30s,7m,2h): ",
-                   lambda t: parse_timing(t) is not None)
-        config[section]['timing']=timing
-        mode=ask(f"Cycle mode for workspace {i} (r=random,s=sequential): ",
-                 lambda v: v in MODE_MAP)
-        config[section]['mode']=MODE_MAP[mode]
-        if MODE_MAP[mode]=='sequential':
-            order=ask(f"Order for workspace {i} (a,z,m,M): ",
-                      lambda v: v in ORDER_MAP)
-            config[section]['order']=ORDER_MAP[order]
-        else:
-            config[section]['order']='n'
-        scaling=ask(f"Scaling for workspace {i} (c=centered,s=scaled,z=zoomed): ",
-                    lambda v: v in SCALING_MAP)
-        config[section]['scaling']=SCALING_MAP[scaling]
+    
+    # -------------------------------------------------------------------------
+    # INDIVIDUAL WORKSPACE SETUP
+    # -------------------------------------------------------------------------
+    used_folders = set()
+    
+    for i in range(1, n_ws + 1):
+        print_header(f"Workspace {i} Configuration")
         
+        section = f"ws{i}"
+        config[section] = {}
+        
+        # Folder selection
+        while True:
+            folder_name = ask(
+                f"Wallpaper folder name (in {BASE_FOLDER}): ",
+                default=f"wallpapers-ws{i}"
+            )
+            full_path = os.path.join(BASE_FOLDER, folder_name)
+            
+            if not os.path.isdir(full_path):
+                print_warning(f"Folder does not exist: {full_path}")
+                create = ask("Create this folder? [Y/n]: ", default='y')
+                if create.lower() == 'y':
+                    os.makedirs(full_path)
+                    print_success(f"Created folder: {full_path}")
+                else:
+                    continue
+            
+            if full_path in used_folders:
+                print_warning("This folder is already used by another workspace")
+                continue
+                
+            break
+        
+        config[section]['folder'] = full_path
+        used_folders.add(full_path)
+        
+        # Icon selection
+        while True:
+            icon_path = ask(
+                "Workspace icon file path: ",
+                default=f"{USER_HOME}/Pictures/icon-ws{i}.png"
+            )
+            
+            if os.path.isfile(icon_path):
+                break
+            print_warning(f"Icon file not found: {icon_path}")
+        
+        # Copy icon to AWP directory
+        folder_base = os.path.basename(folder_name)
+        _, ext = os.path.splitext(icon_path)
+        dest_icon = os.path.join(ICON_DIR, f"{folder_base}{ext or '.png'}")
+        shutil.copy(icon_path, dest_icon)
+        config[section]['icon'] = dest_icon
+        print_success(f"Icon configured: {dest_icon}")
+        
+        # Extract icon color
+        color = get_icon_color(dest_icon)
+        if color:
+            config[section]['icon_color'] = color
+            config[section]['color_variable'] = f"{section}_color"
+            print_success(f"Icon color: {color}")
+        
+        # Timing configuration
+        timing = ask(
+            "Wallpaper rotation interval (e.g., 30s, 5m, 1h): ",
+            lambda t: parse_timing(t) is not None,
+            default='5m'
+        )
+        config[section]['timing'] = timing
+        
+        # Mode selection
+        mode = ask(
+            "Rotation mode - (r)andom or (s)equential [r/s]? ",
+            lambda v: v.lower() in ['r', 's'],
+            default='r'
+        )
+        config[section]['mode'] = MODE_MAP[mode.lower()]
+        
+        # Order configuration (only for sequential mode)
+        if MODE_MAP[mode.lower()] == 'sequential':
+            order = ask(
+                "Sort order - (a) A-Z, (z) Z-A, (m) oldest, (M) newest [a/z/m/M]? ",
+                lambda v: v.lower() in ['a', 'z', 'm', 'M'],
+                default='a'
+            )
+            config[section]['order'] = ORDER_MAP[order.lower()]
+        else:
+            config[section]['order'] = 'n'
+        
+        # Scaling configuration
+        scaling = ask(
+            "Wallpaper scaling - (c)entered, (s)caled, (z)oomed [c/s/z]? ",
+            lambda v: v.lower() in ['c', 's', 'z'],
+            default='s'
+        )
+        config[section]['scaling'] = SCALING_MAP[scaling.lower()]
+        
+        # Theme configuration
         configure_workspace_themes(config, section, i, de)
-
-    # Conky
-    config['conky']={}
-    conky_enabled = ask("Enable AWP info for Conky/lua? (y/n): ",
-                        lambda v: v in ['y','n'])
-    config['conky']['enabled']='true' if conky_enabled=='y' else 'false'
-
-    # Autostart
-    if ask("Create autostart entry so AWP runs at login? (y/n): ",
-           lambda v: v in ['y','n'])=='y':
+        
+        print_success(f"Workspace {i} configuration complete")
+    
+    # -------------------------------------------------------------------------
+    # AUTOSTART SETUP
+    # -------------------------------------------------------------------------
+    print_header("Autostart Configuration")
+    
+    setup_autostart = ask(
+        "Start AWP automatically at login? [Y/n]: ",
+        lambda v: v.lower() in ['y', 'n', ''],
+        default='y'
+    )
+    
+    if setup_autostart.lower() == 'y':
         setup_autostart()
     else:
-        print("[ ] Skipped autostart setup.")
-
-    with open(CONFIG_PATH,'w') as f: config.write(f)
-    print(f"Configuration saved to {CONFIG_PATH}")
-
-    # Startup script check
-    start_script=os.path.expanduser("~/awp/awp_start.sh")
-    if os.path.exists(start_script):
-        os.chmod(start_script,0o755)
-        print(f"[+] Startup script ready: {start_script}")
+        print_success("Autostart skipped - start manually with ~/awp/awp_start.sh")
+    
+    # -------------------------------------------------------------------------
+    # SAVE CONFIGURATION & COMPLETION
+    # -------------------------------------------------------------------------
+    print_header("Saving Configuration")
+    
+    with open(CONFIG_PATH, 'w') as f:
+        config.write(f)
+    
+    print_success(f"Configuration saved: {CONFIG_PATH}")
+    
+    # -------------------------------------------------------------------------
+    # STARTUP INSTRUCTIONS
+    # -------------------------------------------------------------------------
+    print_header("Setup Complete")
+    
+    print_success("AWP configuration file created successfully!")
+    
+    # Autostart status
+    autostart_file = os.path.expanduser("~/.config/autostart/awp_start.desktop")
+    if os.path.exists(autostart_file):
+        print_success("AWP will start automatically on next login")
     else:
-        print(f"[!] Warning: {start_script} not found. Please create it.")
-
-    # Final message (no immediate run!)
-    print(wrap_text("\nAWP setup is complete. If you enabled autostart, "
-                    "AWP will begin automatically on your next login.\n"
-                    "You can also start it manually anytime with: ~/awp/awp_start.sh\n"))
-
+        print("Start AWP manually with:")
+        print(f"  ~/awp/awp_start.sh")
+        print(f"  or")
+        print(f"  python3 ~/awp/awp_daemon.py")
+    
+    # Dashboard info
+    print("\nConfigure settings with graphical dashboard:")
+    print(f"  python3 ~/awp/awp_dab.py")
+    
     print_keybinding_instructions()
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
