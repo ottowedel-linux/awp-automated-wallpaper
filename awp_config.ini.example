@@ -1,12 +1,14 @@
 # Example AWP ini Configuration.
 # Copy this file together with awp_setup.py, awp_daemon.py, awp_nav.py, awp_dab.py
 # and awp_start.sh to ~/awp.
-# If you want to tryout AWP without setup, change this example to awp_config.ini
-# and use python3 awp_dab.py (recommended) to modify this ini or modify it now
-# below manually. 
-# The example is for 3 workspaces, but using awp_setup.py and/or awp_dab.py you
-# could add or remove workspaces as desired. Make sure to select the appropriate
-# os_detected and session_type.
+# The normal flow is to start by python3 awp_setup.py in terminal and this will
+# create the file awp_config.ini.
+# If you want to rather tryout AWP without setup, change this example file to
+# awp_config.ini and start python3 awp_dab.py in terminal (recommended) to modify
+# this ini or manually modify it now. 
+# The example is for 3 workspaces, but by using awp_dab.py you could add or remove
+# workspaces as desired. Make sure to select the appropriate os_detected and
+# session_type.
 
 [general]
 os_detected = xfce
