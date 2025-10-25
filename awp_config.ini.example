@@ -5,7 +5,7 @@
 # and use python3 awp_dab.py (recommended) to modify this ini or modify it now
 # below manually. 
 # The example is for 3 workspaces, but using awp_setup.py and/or awp_dab.py you
-# could setup with less or more as desired. Make sure to select the appropriate
+# could add or remove workspaces as desired. Make sure to select the appropriate
 # os_detected and session_type.
 
 [general]
